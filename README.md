@@ -1,93 +1,115 @@
 # terraform-mws-vpc
 
+Terraform-модуль для создания и управления VPC в MWS Cloud Platform:
 
+| Ресурс | Назначение |
+|---|---|
+| `mws_vpc_network` | Сеть |
+| `mws_vpc_external_address` | Статические внешние IP-адреса (`var.external_addresses`) |
+| `mws_vpc_subnet` | Подсети (`var.subnets`) |
+| `mws_vpc_egress_nat` | Egress NAT-шлюзы (`var.egress_nats`) |
+| `mws_vpc_route` | Маршруты (`var.routes`) |
 
-## Getting started
+Внешние адреса, подсети, NAT-шлюзы и маршруты задаются картами, где ключ — имя ресурса в MWS.
+Поэтому добавление или удаление одного элемента не пересоздаёт остальные.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Требования
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+- Terraform >= 1.11
+- Провайдер `mws-cloud/mws` >= 0.0.35
 
-## Add your files
+Провайдер распространяется через зеркало MWS. Добавьте его в `~/.terraformrc`:
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+```hcl
+provider_installation {
+  network_mirror {
+    url     = "https://storage.mwsapis.ru/mws-terraform/"
+    include = ["registry.terraform.io/mws-cloud/*"]
+  }
+  direct {
+    exclude = ["registry.terraform.io/mws-cloud/*"]
+  }
+}
 ```
-cd existing_repo
-git remote add origin https://gitlab.infra.ab-payments.ru/infrastructure/terraform-mws-vpc.git
-git branch -M main
-git push -uf origin main
+
+## Использование
+
+```hcl
+module "vpc" {
+  source = "git::https://gitlab.infra.ab-payments.ru/infrastructure/terraform-mws-vpc.git?ref=<tag>"
+
+  network_name = "prod"
+
+  subnets = {
+    "prod-private-a" = { cidr = "10.10.0.0/24" }
+    "prod-private-b" = {
+      cidr = "10.10.1.0/24"
+      dhcp_options = {
+        domain_name_servers = ["10.10.0.2"]
+      }
+    }
+  }
+
+  external_addresses = {
+    "prod-nat-ip" = {}
+  }
+
+  egress_nats = {
+    "prod-egress" = {
+      external_addresses = [
+        { name = "prod-nat-ip" }, # адрес из var.external_addresses
+        # { ref = "..." },        # или адрес, созданный вне модуля
+        # { spec = {} },          # или динамический адрес
+      ]
+      subnets          = ["prod-private-a", "prod-private-b"] # ключи из var.subnets
+      ports_per_client = "1024"
+    }
+  }
+
+  routes = {
+    "prod-onprem" = {
+      destination_cidrs    = ["172.16.0.0/12"]
+      next_hop_address_ref = mws_vpc_address.vpn.id
+      # или next_hop_nat_gateway = "natGateways/..."
+    }
+  }
+}
 ```
 
-## Integrate with your tools
+Полный пример находится в [examples/complete](examples/complete).
 
-* [Set up project integrations](https://gitlab.infra.ab-payments.ru/infrastructure/terraform-mws-vpc/-/settings/integrations)
+## Входные переменные
 
-## Collaborate with your team
+| Имя | Тип | По умолчанию | Описание |
+|---|---|---|---|
+| `network_name` | `string` | — | Имя сети |
+| `network_description` | `string` | `null` | Описание сети |
+| `network_display_name` | `string` | `null` | Отображаемое имя сети |
+| `internet_access` | `bool` | `null` | Доступ сети в интернет |
+| `mtu` | `number` | `null` | MTU сети |
+| `project` | `string` | `null` | Путь к проекту; по умолчанию берётся из провайдера |
+| `timeouts` | `object({create, update, delete})` | `null` | Таймауты для всех ресурсов модуля |
+| `external_addresses` | `map(object)` | `{}` | Статические внешние IP: `nat_gateway`, `region`, `description`, `display_name` |
+| `subnets` | `map(object)` | `{}` | Подсети: `cidr`, `region`, `description`, `display_name`, `dhcp_options` |
+| `egress_nats` | `map(object)` | `{}` | Egress NAT: `external_addresses` (в каждом элементе ровно одно из `name` — ключ `var.external_addresses`, `ref`, `spec`), `subnets` (ключи `var.subnets`), `subnet_refs` (внешние ссылки), `ports_per_client`, `description`, `display_name` |
+| `routes` | `map(object)` | `{}` | Маршруты: `destination_cidrs` и ровно одно из `next_hop_address_ref` / `next_hop_nat_gateway`; также `description`, `display_name` |
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## Выходные значения
 
-## Test and Deploy
+| Имя | Описание |
+|---|---|
+| `network_name` | Имя сети |
+| `network_id` | ID ресурса сети |
+| `network_ref` | Относительная ссылка на сеть (`metadata.id`) |
+| `network_status` | Статус сети |
+| `subnets` | Подсети: имя → `{ id, ref, cidr, region }` |
+| `subnet_refs` | Подсети: имя → `metadata.id` |
+| `external_addresses` | Внешние адреса: имя → `{ id, ref, ip_address, region }` |
+| `external_ips` | Внешние адреса: имя → `ip_address` |
+| `egress_nats` | NAT-шлюзы: имя → `{ id, ref, external_ips }` |
+| `routes` | Маршруты: имя → `{ id, ref }` |
 
-Use the built-in continuous integration in GitLab.
+## Ограничения
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Внутренние адреса (`mws_vpc_address`) модуль не создаёт.
+Их создают снаружи и передают в маршруты через `next_hop_address_ref`.
